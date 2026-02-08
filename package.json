@@ -1,0 +1,55 @@
+{
+    "name": "messenger-app",
+    "version": "1.3.0",
+    "description": "Standalone Facebook Messenger app for macOS",
+    "main": "main.js",
+    "scripts": {
+        "start": "electron .",
+        "build": "electron-builder --mac",
+        "build:mac": "electron-builder --mac",
+        "build:win": "electron-builder --win --x64",
+        "build:win:dir": "electron-builder --win --x64 --dir",
+        "build:all": "electron-builder --mac --win --x64"
+    },
+    "author": "Bryan Phan",
+    "license": "MIT",
+    "devDependencies": {
+        "electron": "^40.2.1",
+        "electron-builder": "^26.7.0"
+    },
+    "build": {
+        "appId": "com.bryanfanse.messenger",
+        "productName": "MessengerApp",
+        "mac": {
+            "category": "public.app-category.social-networking",
+            "icon": "icon.icns",
+            "target": [
+                "dmg",
+                "zip"
+            ],
+            "hardenedRuntime": true,
+            "gatekeeperAssess": false,
+            "notarize": false
+        },
+        "win": {
+            "target": [
+                {
+                    "target": "nsis",
+                    "arch": [
+                        "x64"
+                    ]
+                },
+                {
+                    "target": "zip",
+                    "arch": [
+                        "x64"
+                    ]
+                }
+            ]
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true
+        }
+    }
+}
