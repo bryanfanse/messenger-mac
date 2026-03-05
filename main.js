@@ -14,9 +14,9 @@ const fs = require("fs");
 const CURRENT_VERSION = app.getVersion();
 const GITHUB_REPO =
     process.env.MESSENGER_GITHUB_REPO || "bryanfanse/messenger-mac";
-const DEBUG_COOKIES = process.env.DEBUG_COOKIES === "1";
-const STARTUP_METRICS_ENABLED = process.env.STARTUP_METRICS !== "0";
-const COOKIE_PERSIST_SECONDS = 365 * 24 * 60 * 60;
+// Cookie logging removed for security - authentication tokens should never be logged
+const STARTUP_METRICS_ENABLED = process.env.STARTUP_METRICS === "1"; // Disabled by default for privacy
+const COOKIE_PERSIST_SECONDS = 90 * 24 * 60 * 60; // 90 days instead of 1 year for security
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
 const INTERNAL_HOST_RULES = [
     (hostname) =>
@@ -48,7 +48,10 @@ const COOKIE_FLUSH_INTERVAL_MS = 250;
 let settingsSaveTimer = null;
 let pendingSettingsWrite = null;
 const startupEpochHr = process.hrtime.bigint();
-const startupLogPath = path.join(app.getPath("userData"), "startup-metrics.log");
+const startupLogPath = path.join(
+    app.getPath("userData"),
+    "startup-metrics.log",
+);
 
 function getElapsedMs(startHr) {
     return Number(process.hrtime.bigint() - startHr) / 1e6;
@@ -85,6 +88,7 @@ function loadSettings() {
         hasSeenWelcome: false,
         installId: generateInstallId(),
         lastPingDate: null,
+        analyticsEnabled: null, // null = not asked yet, true/false = user choice
     };
 }
 
@@ -266,9 +270,9 @@ function checkForUpdates(silent = false) {
     request.on("error", () => {});
     request.end();
 
-    // Track unique daily active users (per-day counter for history)
+    // Track unique daily active users (per-day counter for history) - ONLY if user consented
     const today = new Date().toISOString().split("T")[0];
-    if (settings.lastPingDate !== today) {
+    if (settings.analyticsEnabled === true && settings.lastPingDate !== today) {
         if (!settings.installId) {
             settings.installId = generateInstallId();
         }
@@ -513,6 +517,31 @@ function showWelcomeWindow() {
     });
 }
 
+// Show privacy consent dialog for anonymous usage analytics
+function showPrivacyConsent() {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    dialog
+        .showMessageBox(mainWindow, {
+            type: "question",
+            title: "Privacy Settings",
+            message: "Help improve Messenger for Mac",
+            detail: "Would you like to share anonymous usage statistics? This helps us understand how many people use the app each day. No personal information or message content is ever collected.\n\nYou can change this later in settings.",
+            buttons: ["Share Analytics", "No Thanks"],
+            defaultId: 0,
+            cancelId: 1,
+        })
+        .then(({ response }) => {
+            settings.analyticsEnabled = response === 0;
+            saveSettings(settings);
+
+            // If user opted in and we haven't counted them yet, ping immediately
+            if (settings.analyticsEnabled && !settings.countedAsUser) {
+                checkForUpdates(true); // This will handle the analytics ping
+            }
+        });
+}
+
 function createWindow() {
     const createWindowStartedHr = process.hrtime.bigint();
     writeStartupMetric("create_window_started");
@@ -538,12 +567,15 @@ function createWindow() {
 
     let hasShownMainWindow = false;
     const showMainWindow = (reason) => {
-        if (hasShownMainWindow || !mainWindow || mainWindow.isDestroyed()) return;
+        if (hasShownMainWindow || !mainWindow || mainWindow.isDestroyed())
+            return;
         hasShownMainWindow = true;
         mainWindow.show();
         writeStartupMetric("window_shown", {
             reason,
-            createWindowMs: Number(getElapsedMs(createWindowStartedHr).toFixed(1)),
+            createWindowMs: Number(
+                getElapsedMs(createWindowStartedHr).toFixed(1),
+            ),
         });
         if (savedWindowState.isMaximized) {
             mainWindow.maximize();
@@ -572,11 +604,11 @@ function createWindow() {
 
         Promise.all(
             cookiesToPersist.map((cookieToPersist) =>
-                session.defaultSession.cookies.set(cookieToPersist).catch((err) => {
-                    if (DEBUG_COOKIES) {
-                        log(`Cookie error: ${err}`);
-                    }
-                }),
+                session.defaultSession.cookies
+                    .set(cookieToPersist)
+                    .catch(() => {
+                        // Cookie persistence failed - silently continue
+                    }),
             ),
         ).finally(() => {
             isFlushingCookies = false;
@@ -612,13 +644,6 @@ function createWindow() {
     const cookiePersistenceCache = new Map();
     const cookieCacheTtlMs = 10 * 60 * 1000;
 
-    const logFile = path.join(app.getPath("userData"), "cookies.log");
-    const log = (msg) => {
-        if (!DEBUG_COOKIES) return;
-        const line = `${new Date().toISOString()} - ${msg}\n`;
-        fs.appendFile(logFile, line, () => {});
-    };
-
     // Convert session cookies to persistent cookies
     session.defaultSession.cookies.on(
         "changed",
@@ -626,11 +651,6 @@ function createWindow() {
             const isFacebookDomain =
                 cookie.domain.includes("facebook.com") ||
                 cookie.domain.includes("messenger.com");
-            if (DEBUG_COOKIES) {
-                log(
-                    `Cookie: ${cookie.name} | domain: ${cookie.domain} | session: ${cookie.session} | removed: ${removed}`,
-                );
-            }
 
             if (!removed && cookie.session && isFacebookDomain) {
                 const key = `${cookie.domain}|${cookie.path}|${cookie.name}`;
@@ -690,7 +710,9 @@ function createWindow() {
     // Give user clear feedback while pages/resources are loading.
     mainWindow.webContents.once("did-start-loading", () => {
         writeStartupMetric("first_did_start_loading", {
-            createWindowMs: Number(getElapsedMs(createWindowStartedHr).toFixed(1)),
+            createWindowMs: Number(
+                getElapsedMs(createWindowStartedHr).toFixed(1),
+            ),
         });
     });
     mainWindow.webContents.on("did-start-loading", () => {
@@ -713,7 +735,9 @@ function createWindow() {
     // Apply sidebar state when page finishes loading
     mainWindow.webContents.once("did-finish-load", () => {
         writeStartupMetric("first_did_finish_load", {
-            createWindowMs: Number(getElapsedMs(createWindowStartedHr).toFixed(1)),
+            createWindowMs: Number(
+                getElapsedMs(createWindowStartedHr).toFixed(1),
+            ),
         });
     });
     mainWindow.webContents.on("did-finish-load", () => {
@@ -973,6 +997,11 @@ function createMenu() {
                 },
                 { type: "separator" },
                 {
+                    label: "Privacy Settings...",
+                    click: () => showPrivacyConsent(),
+                },
+                { type: "separator" },
+                {
                     label: "Check for Updates...",
                     click: () => checkForUpdates(false),
                 },
@@ -992,6 +1021,14 @@ app.whenReady().then(() => {
     // Show welcome window on first launch
     if (!settings.hasSeenWelcome) {
         setTimeout(() => showWelcomeWindow(), 1500);
+    }
+
+    // Show privacy consent if not yet decided
+    if (settings.analyticsEnabled === null) {
+        setTimeout(
+            () => showPrivacyConsent(),
+            !settings.hasSeenWelcome ? 3000 : 1500,
+        );
     }
 
     // Check for updates silently on startup
